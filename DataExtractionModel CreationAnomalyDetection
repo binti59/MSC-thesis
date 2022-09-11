@@ -1,0 +1,907 @@
+/*Create the bond data set first fo*/
+create or replace table arimapluspd.arima_table as
+SELECT
+GENERATE_UUID() rowid,
+       cast(substr(cast(POST_TRADE_DATE_AND_TIME as string),0,25) as timestamp) POST_TRADE_DATE_AND_TIME, --timestamp
+      -- TRADING_DATE_AND_TIME,
+     --  POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+       PRICE,
+       VENUE_OF_EXECUTION,
+       PRICE_NOTATION,
+       PRICE_CURRENCY,
+       VENUE_OF_PUBLICATION,
+       TRANSACTION_IDENTIFICATION_CODE,
+       cast(QUANTITY AS INT64) AS QUANTITY,
+       NOTIONAL_AMOUNT,
+       NOTIONAL_CURRENCY,
+       PUBLICATION_DATE_AND_TIME,
+       IDAF
+  
+FROM
+  `pd-prod-bristol-e0be.looker_connectors.historical_rts2_enriched`  
+ where  
+        CANCELLED=False
+        and ACTIVE=True
+        and INSTRUMENT_IDENTIFICATION_CODE_TYPE='ISIN'
+        
+        and INSTRUMENT_IDENTIFICATION_CODE in (select distinct ISIN from `pd-prod-bristol-e0be.looker_connectors.mv_debt_instruments`
+where DMO=TRUE and ISSUER_COUNTRY_CODE = 'GB' and NOTIONAL_CURRENCY='GBP'
+and TRADING_VENUE_TERMINATION_DATE >current_timestamp())
+order by 1 asc
+        
+select last_day(current_datetime)-30
+
+
+
+/*ARIMA PLUS MODEL QUANTITY*/
+CREATE OR REPLACE MODEL `arimapluspd.propellant_arima_plus_model_qty` 
+OPTIONS(
+  MODEL_TYPE='ARIMA_PLUS',
+  TIME_SERIES_TIMESTAMP_COL='POST_TRADE_DATE_AND_TIME',
+  TIME_SERIES_DATA_COL= 'Quantity', --'Price',
+  TIME_SERIES_ID_COL= ['INSTRUMENT_IDENTIFICATION_CODE'],
+  HOLIDAY_REGION='EMEA'
+ ) AS
+SELECT
+POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+      -- PRICE
+      IFNULL(QUANTITY,0) QUANTITY
+FROM
+arimapluspd.arima_plus_table
+where
+EXTRACT(date FROM cast(POST_TRADE_DATE_AND_TIME as timestamp)) < last_day(current_datetime)-50
+
+select * from arimapluspd.arima_plus_table order by date asc
+
+create or replace table arimapluspd.arima_plus_table 
+as 
+select b.id ,
+cast (substr(cast(a.POST_TRADE_DATE_AND_TIME as string),0,10) as date) date ,
+--tumble_interval(POST_TRADE_DATE_AND_TIME,900) tumble,
+a.* ,
+Cast(Price as float64) New_Price FROM 
+  `agile-splicer-354418.arimapluspd.arima_model_data` a, kmeans_model.bond_data_with_id b
+  where a.INSTRUMENT_IDENTIFICATION_CODE=b.ISIN;
+
+select * from arimapluspd.arima_plus_traindata_results_qty where is_anomaly is true
+
+select * from arimapluspd.arima_plus_traindata_results_qty --where is_anomaly is true
+where date  in ('2022-01-30','2022-01-31','2022-02-01','2022-02-18','2022-02-17','2022-02-19','2022-02-20','2022-02-15','2022-02-01','2022-02-08') and INSTRUMENT_IDENTIFICATION_CODE='GB0004893086' order by date desc
+
+select * from arimapluspd.arima_plus_traindata_results_price --where is_anomaly is true
+where date  in ('2022-01-05','2022-01-12','2022-02-19','2022-02-20','2022-02-15','2022-02-01','2022-02-08') and INSTRUMENT_IDENTIFICATION_CODE='GB0004893086'
+
+select * from arimapluspd.arima_plus_traindata_results_qty where is_anomaly is true
+ and date ='2022-02-18' and INSTRUMENT_IDENTIFICATION_CODE='GB0004893086'
+
+ select * from arimapluspd.arima_plus_table where date  in ('2022-02-15') and INSTRUMENT_IDENTIFICATION_CODE='GB0004893086' order by date desc
+
+  select * from  arimapluspd.arima_plus_traindata_results_qty where date  in ('2022-02-15') and INSTRUMENT_IDENTIFICATION_CODE='GB0004893086' order by date desc
+
+
+
+
+Create or replace table  arimapluspd.arima_plus_traindata_results_qty as
+Select IFNULL(a.is_anomaly,False) is_anomaly,IFNULL(a.Anomaly_Type,'NA') Anomaly_Type,b.* from 
+ (Select   POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+       PRICE,
+       VENUE_OF_EXECUTION,
+       PRICE_NOTATION,
+       PRICE_CURRENCY,
+       VENUE_OF_PUBLICATION,
+       TRANSACTION_IDENTIFICATION_CODE,
+       IFNULL(cast(QUANTITY AS INT64),0) AS QUANTITY,
+       NOTIONAL_AMOUNT,
+       NOTIONAL_CURRENCY,
+       PUBLICATION_DATE_AND_TIME,
+       IDAF from  arimapluspd.arima_plus_table) as b
+       left join 
+(
+SELECT
+  *, case when anomaly_probability between 0.8 and 0.85 then 'Low'
+                 when anomaly_probability between 0.85 and 0.95 then 'Medium'
+                 when anomaly_probability between 0.95 and 1 then 'High' end as Anomaly_Type 
+FROM
+  ML.DETECT_ANOMALIES(MODEL `arimapluspd.propellant_arima_plus_model_qty`,
+    STRUCT(0.8 AS anomaly_prob_threshold)
+         ) ) as a 
+            ON (a.POST_TRADE_DATE_AND_TIME=b.POST_TRADE_DATE_AND_TIME and a.INSTRUMENT_IDENTIFICATION_CODE=b.INSTRUMENT_IDENTIFICATION_CODE)
+
+
+      # Model fit on train data
+
+select is_anomaly,anomaly_type,POST_TRADE_DATE_AND_TIME,INSTRUMENT_IDENTIFICATION_CODE,quantity  from arimapluspd.arima_plus_traindata_results_qty where is_anomaly=True
+
+select is_anomaly,anomaly_type,POST_TRADE_DATE_AND_TIME,INSTRUMENT_IDENTIFICATION_CODE,price  from arimapluspd.arima_plus_traindata_results_price where is_anomaly=True
+
+select * from arimapluspd.arima_plus_testdata_results_qty where is_anomaly=True
+
+Create or replace table  arimapluspd.arima_plus_testdata_results_qty as
+WITH
+  new_data AS (
+SELECT
+       POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+       --PRICE
+       QUANTITY
+FROM
+arimapluspd.arima_plus_table
+where
+EXTRACT(date FROM cast(POST_TRADE_DATE_AND_TIME as timestamp)) >=last_day(current_datetime)-50)
+SELECT 
+  *, case when anomaly_probability between 0.8 and 0.85 then 'Low'
+                 when anomaly_probability between 0.85 and 0.95 then 'Medium'
+                 when anomaly_probability between 0.95 and 1 then 'High' end as Anomaly_Type 
+FROM   ML.DETECT_ANOMALIES(MODEL `arimapluspd.propellant_arima_plus_model_qty`,
+                      STRUCT(0.8 AS anomaly_prob_threshold), 
+(SELECT
+      *
+    FROM
+      new_data));
+
+
+Create table Arima
+SELECT
+  *, case when anomaly_probability between 0.8 and 0.85 then 'Low'
+                 when anomaly_probability between 0.85 and 0.95 then 'Medium'
+                 when anomaly_probability between 0.95 and 1 then 'High' end as Anomaly_Type 
+FROM
+  ML.DETECT_ANOMALIES(MODEL `arimapluspd.propellant_arima_plus_model`,
+                      STRUCT(0.8 AS anomaly_prob_threshold)) where is_anomaly=true;
+
+                      
+SELECT
+  *
+FROM
+  ML.EVALUATE(MODEL `arimapluspd.propellant_arima_plus_model`
+                      );
+
+
+drop model `arimapluspd.propellant_arima_plus_model_price`
+
+/*ARIMA PLUS MODEL PRICE*/
+CREATE OR REPLACE MODEL `arimapluspd.propellant_arima_plus_model_price` 
+OPTIONS(
+  MODEL_TYPE='ARIMA_PLUS',
+  TIME_SERIES_TIMESTAMP_COL='POST_TRADE_DATE_AND_TIME',
+  TIME_SERIES_DATA_COL= 'PRICE',
+  TIME_SERIES_ID_COL= ['INSTRUMENT_IDENTIFICATION_CODE'],
+  HOLIDAY_REGION='EMEA'
+ ) AS
+SELECT
+POST_TRADE_DATE_AND_TIME,
+--DATE,
+       INSTRUMENT_IDENTIFICATION_CODE,
+       IFNULL(PRICE,0) PRICE,
+     FROM
+arimapluspd.arima_plus_table
+where
+EXTRACT(date FROM cast(POST_TRADE_DATE_AND_TIME as timestamp)) < last_day(current_datetime)-50
+
+
+
+
+
+select * from arimapluspd.arima_plus_traindata_results_price where is_anomaly is true
+
+Create or replace table  arimapluspd.arima_plus_traindata_results_price as
+Select IFNULL(a.is_anomaly,False) is_anomaly,IFNULL(a.Anomaly_Type,'NA') Anomaly_Type,b.* from 
+ (Select   POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+       IFNULL(PRICE,0) PRICE,
+       VENUE_OF_EXECUTION,
+       PRICE_NOTATION,
+       PRICE_CURRENCY,
+       VENUE_OF_PUBLICATION,
+       TRANSACTION_IDENTIFICATION_CODE,
+       cast(QUANTITY AS INT64) AS QUANTITY,
+       NOTIONAL_AMOUNT,
+       NOTIONAL_CURRENCY,
+       PUBLICATION_DATE_AND_TIME,
+       IDAF from  arimapluspd.arima_plus_table) as b
+       left join 
+(
+SELECT
+  *, case when anomaly_probability between 0.8 and 0.85 then 'Low'
+                 when anomaly_probability between 0.85 and 0.95 then 'Medium'
+                 when anomaly_probability between 0.95 and 1 then 'High' end as Anomaly_Type 
+FROM
+  ML.DETECT_ANOMALIES(MODEL `arimapluspd.propellant_arima_plus_model_price`,
+    STRUCT(0.8 AS anomaly_prob_threshold)
+         ) ) as a 
+            ON (a.POST_TRADE_DATE_AND_TIME=b.POST_TRADE_DATE_AND_TIME and a.INSTRUMENT_IDENTIFICATION_CODE=b.INSTRUMENT_IDENTIFICATION_CODE)
+   
+     
+
+
+      # Model fit on train data
+
+select * from arimapluspd.arima_plus_testdata_results_price where is_anomaly=True
+
+Create or replace table  arimapluspd.arima_plus_testdata_results_price as
+WITH
+  new_data AS (
+SELECT
+       POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+       PRICE
+       --QUANTITY
+FROM
+arimapluspd.arima_plus_table
+where
+EXTRACT(date FROM cast(POST_TRADE_DATE_AND_TIME as timestamp)) >=last_day(current_datetime)-50)
+SELECT *, case when anomaly_probability between 0 and 0.33 then 'Low'
+                 when anomaly_probability between 0.33 and 0.66 then 'Medium'
+                 when anomaly_probability between 0.66 and 1 then 'High' end as Risk_level 
+FROM   ML.DETECT_ANOMALIES(MODEL `arimapluspd.propellant_arima_plus_model_price`,
+                      STRUCT(0.8 AS anomaly_prob_threshold), 
+(SELECT
+      *
+    FROM
+      new_data));
+
+
+
+
+SELECT * FROM `pd-prod-bristol-e0be.looker_connectors.INFORMATION_SCHEMA.TABLES`
+
+select * from `pd-prod-bristol-e0be.looker_connectors.mv_other_instruments`
+where  ISIN in  (select distinct ISIN from `pd-prod-bristol-e0be.looker_connectors.mv_debt_instruments`
+where DMO=TRUE and ISSUER_COUNTRY_CODE = 'GB' and NOTIONAL_CURRENCY='GBP'
+and TRADING_VENUE_TERMINATION_DATE >current_timestamp())
+
+
+create or replace table arimapluspd.bonds_data as 
+select distinct ISIN from `pd-prod-bristol-e0be.looker_connectors.mv_debt_instruments`
+where DMO=TRUE and ISSUER_COUNTRY_CODE = 'GB' and NOTIONAL_CURRENCY='GBP'
+and TRADING_VENUE_TERMINATION_DATE >current_timestamp()
+
+
+
+select * from `pd-prod-bristol-e0be.looker_connectors.historical_rts2_enriched`  
+where INSTRUMENT_IDENTIFICATION_CODE  in (select distinct ISIN from `pd-prod-bristol-e0be.looker_connectors.mv_debt_instruments`
+where DMO=TRUE and ISSUER_COUNTRY_CODE = 'GB' and NOTIONAL_CURRENCY='GBP'
+and TRADING_VENUE_TERMINATION_DATE >current_timestamp())
+and CANCELLED=False
+        and ACTIVE=True
+
+
+
+
+SELECT
+count(*),
+ INSTRUMENT_IDENTIFICATION_CODE
+FROM
+  `pd-prod-bristol-e0be.looker_connectors.historical_rts2_enriched`  
+  where CANCELLED=False
+        and ACTIVE=True
+        and INSTRUMENT_IDENTIFICATION_CODE in (select distinct ISIN from `pd-prod-bristol-e0be.looker_connectors.mv_debt_instruments`
+where DMO=TRUE and ISSUER_COUNTRY_CODE = 'GB' and NOTIONAL_CURRENCY='GBP'
+and TRADING_VENUE_TERMINATION_DATE >current_timestamp())
+ group by
+INSTRUMENT_IDENTIFICATION_CODE
+order by count(*) desc
+
+SELECT
+*
+FROM
+  `pd-prod-bristol-e0be.looker_connectors.historical_rts2_enriched`  
+
+
+  /*Auto Encoder Model*/
+CREATE OR REPLACE MODEL `proplellantmscthesis.autoencoder.propellant_autoencoder_model` 
+OPTIONS(
+  model_type='autoencoder',
+  activation_fn='relu',
+  batch_size=8,
+  dropout=0.2,  
+  hidden_units=[32,16, 4, 16,32],
+  learn_rate=0.001,
+  l1_reg_activation=0.0001,
+  max_iterations=10,
+  optimizer='adam'
+) AS 
+SELECT 
+* from autoencoder.autoencoder_train_data 
+
+create or replace table autoencoder.autoencoder_train_data as
+SELECT 
+* from`agile-splicer-354418.autoencoder.autoencoder_model_data`
+where TRADING_DATE_AND_TIME is not null 
+and price_currency is not null
+limit 30000;
+
+  create table proplellantmscthesis.autoencoder.autoencoder_model_data as 
+  select * from `agile-splicer-354418.autoencoder.autoencoder_model_data`
+
+  create or replace table proplellantmscthesis.autoencoder.autoencoder_model_data as
+select * from (
+SELECT
+       --cast(substr(cast(POST_TRADE_DATE_AND_TIME as string),0,25) as timestamp) POST_TRADE_DATE_AND_TIME, --timestamp
+       cast(TRADING_DATE_AND_TIME as string) TRADING_DATE_AND_TIME,
+       cast(POST_TRADE_DATE_AND_TIME as string)POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+       PRICE,
+       VENUE_OF_EXECUTION,
+       PRICE_NOTATION,
+       PRICE_CURRENCY,
+       VENUE_OF_PUBLICATION,
+       TRANSACTION_IDENTIFICATION_CODE,
+       cast(QUANTITY AS INT64) AS QUANTITY,
+       NOTIONAL_AMOUNT,
+       NOTIONAL_CURRENCY,
+       PUBLICATION_DATE_AND_TIME,
+       IDAF
+FROM
+  `pd-prod-bristol-e0be.looker_connectors.historical_rts2_enriched`  
+ where  
+        CANCELLED=False
+        and ACTIVE=True
+        --and EXTRACT(date FROM TRADING_DATE_AND_TIME) < last_day(current_datetime)-60
+        and INSTRUMENT_IDENTIFICATION_CODE --like 'DE%'
+        in (select distinct ISIN from `pd-prod-bristol-e0be.looker_connectors.mv_debt_instruments`
+where DMO=TRUE and ISSUER_COUNTRY_CODE = 'GB' and NOTIONAL_CURRENCY='GBP'
+and TRADING_VENUE_TERMINATION_DATE >current_timestamp())
+order by 1 asc)
+
+
+                 
+
+
+create or replace table autoencoder.autoencoder_train_resultset as  
+SELECT
+    *, case when is_anomaly is true and mean_squared_error between   0.001000000000 and 100.0000000000000    then 'High'
+                 when is_anomaly is true and mean_squared_error  between 0.0000000100000 and 0.0009900000000  then 'Medium'
+                 when is_anomaly is true and mean_squared_error between  0.0000000000001 and 0.0000000099000 then 'Low'
+                 when is_anomaly is false then 'NOT'
+                  end as Anomaly_Type 
+FROM
+  ML.DETECT_ANOMALIES(MODEL `proplellantmscthesis.autoencoder.propellant_autoencoder_model`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE`proplellantmscthesis.autoencoder.autoencoder_train_data`) where INSTRUMENT_IDENTIFICATION_CODE= 'GB0004893086'
+
+select * from  autoencoder.autoencoder_train_resultset where is_anomaly=true
+
+select is_anomaly,anomaly_type,POST_TRADE_DATE_AND_TIME,INSTRUMENT_IDENTIFICATION_CODE,price,quantity from autoencoder.auto_encoder_results_set where is_anomaly=true and INSTRUMENT_IDENTIFICATION_CODE in ('GB0004893086','GB00BMGR2809') 
+
+create or replace table `proplellantmscthesis.autoencoder.auto_encoder_results_set` as
+  SELECT
+   *, case when is_anomaly is true and mean_squared_error between   0.001000000000 and 100.0000000000000    then 'High'
+                 when is_anomaly is true and mean_squared_error  between 0.0000000100000 and 0.0009900000000  then 'Medium'
+                 when is_anomaly is true and mean_squared_error between  0.0000000000001 and 0.0000000099000 then 'Low'
+                 when is_anomaly is false then 'NOT'
+                  end as Anomaly_Type 
+FROM
+  ML.DETECT_ANOMALIES(MODEL `proplellantmscthesis.autoencoder.propellant_autoencoder_model`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE `agile-splicer-354418.autoencoder.autoencoder_model_data`) --where is_anomaly=true;
+
+select max(length(cast (mean_squared_error as string))) ,min(length(cast (mean_squared_error as string))) mean_squared_error from proplellantmscthesis.autoencoder.auto_encoder_results_set where is_anomaly=true
+
+
+
+
+select max(mean_squared_error),min(mean_squared_error),  from proplellantmscthesis.autoencoder.auto_encoder_results_set where is_anomaly=true
+
+
+select max(mean_squared_error),min(mean_squared_error)  from proplellantmscthesis.autoencoder.auto_encoder_results_set where is_anomaly=false
+
+  SELECT
+  *
+FROM ML.RECONSTRUCTION_LOSS(MODEL `proplellantmscthesis.autoencoder.propellant_autoencoder_model`,
+                                           TABLE `agile-splicer-354418.autoencoder.autoencoder_model_data`)
+
+  SELECT
+  *
+FROM
+  ML.DETECT_ANOMALIES(MODEL `autoencoder.propellant_autoencoder_model`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE `autoencoder.autoencoder_model_data`)  where instrument_identification_code='GB00BLBDX619' and is_anomaly=True
+
+
+                      select * from autoencoder.autoencoder_model_data where instrument_identification_code='GB00BDX8CX86'
+
+                      select * from autoencoder.autoencoder_model_data where instrument_identification_code='GB00BLBDX619' 
+
+                      
+
+
+ /*K-Means Clustering  */             
+
+CREATE OR REPLACE MODEL `kmeans_model.propellant_kmeans_model`
+OPTIONS(
+  MODEL_TYPE = 'kmeans',
+  NUM_CLUSTERS =  85,
+  KMEANS_INIT_METHOD = 'kmeans++',
+  STANDARDIZE_FEATURES = TRUE
+
+) AS
+SELECT 
+  b.ID,Price,Quantity,NOTIONAL_AMOUNT
+FROM 
+  `agile-splicer-354418.autoencoder.autoencoder_model_data` a, kmeans_model.bond_data_with_id b
+  where a.INSTRUMENT_IDENTIFICATION_CODE=b.ISIN and a.PRICE_CURRENCY='GBP' and a.PRICE_NOTATION='PERC'
+  limit 30000;
+
+create or replace table proplellantmscthesis.kmeans_model.k_means_train_data as
+  SELECT 
+  b.ID,Price,Quantity,NOTIONAL_AMOUNT
+FROM 
+  `agile-splicer-354418.autoencoder.autoencoder_model_data` a, kmeans_model.bond_data_with_id b
+  where a.INSTRUMENT_IDENTIFICATION_CODE=b.ISIN and a.PRICE_CURRENCY='GBP' and a.PRICE_NOTATION='PERC'
+  limit 30000;
+
+  select count(distinct CENTROID_ID) from kmeans_model.kmeans_results_set
+
+  select is_anomaly,id,centroid_id,POST_TRADE_DATE_AND_TIME,INSTRUMENT_IDENTIFICATION_CODE,price,quantity from proplellantmscthesis.kmeans_model.kmeans_results_set where is_anomaly is true and INSTRUMENT_IDENTIFICATION_CODE in ('GB00BLBDX619')
+
+ select * from proplellantmscthesis.kmeans_model.kmeans_results_set where  is_anomaly is true
+
+  select * from proplellantmscthesis.kmeans_model.kmeans_results_set where id=63
+
+    SELECT
+  *
+FROM
+  ML.DETECT_ANOMALIES(MODEL `proplellantmscthesis.kmeans_model.propellant_kmeans_model`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE proplellantmscthesis.kmeans_model.k_means_train_data) where is_anomaly=true
+
+create or replace table proplellantmscthesis.kmeans_model.kmeans_results_set as
+  SELECT
+  *
+FROM
+  ML.DETECT_ANOMALIES(MODEL `proplellantmscthesis.kmeans_model.propellant_kmeans_model`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE proplellantmscthesis.kmeans_model.k_means_table) --where centroid_id=51;      
+
+Create or replace table kmeans_model.bond_data_with_id as
+select * , ROW_NUMBER() OVER(PARTITION BY 1) id from `agile-splicer-354418.arimapluspd.bonds_data`
+
+create or replace table kmeans_model.k_means_table as select b.id ,a.* FROM 
+  `agile-splicer-354418.autoencoder.autoencoder_model_data` a, kmeans_model.bond_data_with_id b
+  where a.INSTRUMENT_IDENTIFICATION_CODE=b.ISIN and a.PRICE_CURRENCY='GBP' and a.PRICE_NOTATION='PERC';
+
+  select INSTRUMENT_IDENTIFICATION_CODE,PRICE from proplellantmscthesis.arimapluspd.arima_plus_testdata_results_price
+  intersect distinct
+    select INSTRUMENT_IDENTIFICATION_CODE,PRICE,QUANTITY,NOTIONAL_AMOUNT  from proplellantmscthesis.arimapluspd.arima_plus_testdata_results_qty
+  intersect distinct
+    select INSTRUMENT_IDENTIFICATION_CODE,PRICE,QUANTITY,NOTIONAL_AMOUNT  from proplellantmscthesis.autoencoder.auto_encoder_results_set
+  intersect distinct
+    select INSTRUMENT_IDENTIFICATION_CODE,PRICE,QUANTITY,NOTIONAL_AMOUNT  from proplellantmscthesis.kmeans_model.kmeans_results_set
+
+  
+   select INSTRUMENT_IDENTIFICATION_CODE from proplellantmscthesis.arimapluspd.arima_plus_traindata_results_price where is_anomaly =true
+  intersect distinct
+       select INSTRUMENT_IDENTIFICATION_CODE from proplellantmscthesis.autoencoder.auto_encoder_results_set where is_anomaly =true
+  intersect distinct
+    select INSTRUMENT_IDENTIFICATION_CODE from proplellantmscthesis.kmeans_model.kmeans_results_set where is_anomaly =true
+
+    select * from proplellantmscthesis.arimapluspd.arima_plus_testdata_results_price
+
+
+    
+   select INSTRUMENT_IDENTIFICATION_CODE,QUANTITY from proplellantmscthesis.arimapluspd.arima_plus_testdata_results_qty where is_anomaly =true
+  intersect distinct
+       select INSTRUMENT_IDENTIFICATION_CODE,POST_TRADE_DATE_AND_TIME,QUANTITY from proplellantmscthesis.autoencoder.auto_encoder_results_set where is_anomaly =true
+  intersect distinct
+    select INSTRUMENT_IDENTIFICATION_CODE,POST_TRADE_DATE_AND_TIME,QUANTITY   from proplellantmscthesis.kmeans_model.kmeans_results_set where is_anomaly =true
+
+select distinct INSTRUMENT_IDENTIFICATION_CODE from( 
+     select INSTRUMENT_IDENTIFICATION_CODE,POST_TRADE_DATE_AND_TIME,QUANTITY,PRICE from proplellantmscthesis.autoencoder.auto_encoder_results_set where is_anomaly =true
+  intersect distinct
+    select INSTRUMENT_IDENTIFICATION_CODE,POST_TRADE_DATE_AND_TIME,QUANTITY,PRICE   from proplellantmscthesis.kmeans_model.kmeans_results_set where is_anomaly =true)
+
+CREATE EXTERNAL TABLE `proplellantmscthesis.autoencoder.AEDataset`
+OPTIONS (
+  format = 'CSV',
+  uris = ['gs://propellantdata/autoencoders_results_t.csv']
+);
+
+select * from autoencoder.AEDataset
+
+drop model `proplellantmscthesis.autoencoder.propellant_autoencoder_model` 
+
+  /*Auto Encoder Model*/
+CREATE OR REPLACE MODEL `proplellantmscthesis.autoencoder.propellant_autoencoder_model` 
+OPTIONS(
+  model_type='autoencoder',
+  activation_fn='relu',
+  batch_size=8,
+  dropout=0.2,  
+  hidden_units=[32,16, 4, 16,32],
+  learn_rate=0.001,
+  l1_reg_activation=0.0001,
+  max_iterations=10,
+  optimizer='adam'
+) AS 
+SELECT 
+* from autoencoder.autoencoder_train_data 
+
+
+
+create or replace table autoencoder.autoencoder_model_data as
+SELECT 
+       cast(TRADING_DATE_AND_TIME as string) TRADING_DATE_AND_TIME,
+       cast(POST_TRADE_DATE_AND_TIME as string)POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+       PRICE,
+       VENUE_OF_EXECUTION,
+       PRICE_NOTATION,
+       PRICE_CURRENCY,
+       VENUE_OF_PUBLICATION,
+       TRANSACTION_IDENTIFICATION_CODE,
+       cast(QUANTITY AS INT64) AS QUANTITY,
+       NOTIONAL_AMOUNT,
+       NOTIONAL_CURRENCY,
+       cast(PUBLICATION_DATE_AND_TIME as string) PUBLICATION_DATE_AND_TIME,
+       IDAF from autoencoder.AEDataset
+
+
+create or replace table autoencoder.autoencoder_train_data as
+SELECT 
+       cast(TRADING_DATE_AND_TIME as string) TRADING_DATE_AND_TIME,
+       cast(POST_TRADE_DATE_AND_TIME as string)POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+       PRICE,
+       VENUE_OF_EXECUTION,
+       PRICE_NOTATION,
+       PRICE_CURRENCY,
+       VENUE_OF_PUBLICATION,
+       TRANSACTION_IDENTIFICATION_CODE,
+       cast(QUANTITY AS INT64) AS QUANTITY,
+       NOTIONAL_AMOUNT,
+       NOTIONAL_CURRENCY,
+       cast(PUBLICATION_DATE_AND_TIME as string) PUBLICATION_DATE_AND_TIME,
+       IDAF
+       from autoencoder.AEDataset
+where TRADING_DATE_AND_TIME is not null 
+and price_currency is not null
+limit 30000;
+
+
+                 
+
+create or replace table `proplellantmscthesis.autoencoder.auto_encoder_results_set` as
+  SELECT
+   *, case when is_anomaly is true and mean_squared_error between   0.001000000000 and 100.0000000000000    then 'High'
+                 when is_anomaly is true and mean_squared_error  between 0.0000000100000 and 0.0009900000000  then 'Medium'
+                 when is_anomaly is true and mean_squared_error between  0.0000000000001 and 0.0000000099000 then 'Low'
+                 when is_anomaly is false then 'NOT'
+                  end as Anomaly_Type 
+FROM
+  ML.DETECT_ANOMALIES(MODEL `proplellantmscthesis.autoencoder.propellant_autoencoder_model`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE `autoencoder.autoencoder_model_data`) 
+                   
+
+
+create or replace table autoencoder.autoencoder_train_resultset as  
+SELECT
+    *, case when is_anomaly is true and mean_squared_error between   0.001000000000 and 100.0000000000000    then 'High'
+                 when is_anomaly is true and mean_squared_error  between 0.0000000100000 and 0.0009900000000  then 'Medium'
+                 when is_anomaly is true and mean_squared_error between  0.0000000000001 and 0.0000000099000 then 'Low'
+                 when is_anomaly is false then 'NOT'
+                  end as Anomaly_Type 
+FROM
+  ML.DETECT_ANOMALIES(MODEL `proplellantmscthesis.autoencoder.propellant_autoencoder_model`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE`proplellantmscthesis.autoencoder.autoencoder_train_data`)
+
+                      select * from `proplellantmscthesis.autoencoder.autoencoder_train_resultset` where is_anomaly = true
+
+                                            select * from `proplellantmscthesis.autoencoder.auto_encoder_results_set` where is_anomaly = true
+
+
+
+ /* Added log transformation and price differencing  */    
+
+create or replace table autoencoder.autoencoder_model_data_extended as
+ SELECT 
+     cast(TRADING_DATE_AND_TIME as string) TRADING_DATE_AND_TIME,
+       cast(POST_TRADE_DATE_AND_TIME as string)POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+        ifnull(PRICE,0) PRICE,
+       VENUE_OF_EXECUTION,
+       PRICE_NOTATION,
+       PRICE_CURRENCY,
+       VENUE_OF_PUBLICATION,
+       TRANSACTION_IDENTIFICATION_CODE,
+        ifnull(cast(QUANTITY AS INT64),0) AS QUANTITY,
+       NOTIONAL_AMOUNT,
+       NOTIONAL_CURRENCY,
+       cast(PUBLICATION_DATE_AND_TIME as string) PUBLICATION_DATE_AND_TIME,
+       IDAF ,
+       ifnull(PRICE,0)-LAG( ifnull(PRICE,0)) OVER (PARTITION BY INSTRUMENT_IDENTIFICATION_CODE ORDER BY INSTRUMENT_IDENTIFICATION_CODE,POST_TRADE_DATE_AND_TIME) AS PRICE_DIFF,
+       log(ifnull(cast(QUANTITY AS INT64),0)+3) LOG_QUANTITY
+       from autoencoder.AEDataset   
+       order by 3,2
+       asc                                    
+
+
+CREATE OR REPLACE MODEL `proplellantmscthesis.autoencoder.propellant_autoencoder_model_extended` 
+OPTIONS(
+  model_type='autoencoder',
+  activation_fn='relu',
+  batch_size=8,
+  dropout=0.2,  
+  hidden_units=[32,16, 4, 16,32],
+  learn_rate=0.001,
+  l1_reg_activation=0.0001,
+  max_iterations=10,
+  optimizer='adam'
+) AS 
+SELECT 
+* from autoencoder.autoencoder_train_data_EXTENDED
+
+
+
+
+
+
+create or replace table autoencoder.autoencoder_train_data_EXTENDED as
+SELECT 
+       cast(TRADING_DATE_AND_TIME as string) TRADING_DATE_AND_TIME,
+       cast(POST_TRADE_DATE_AND_TIME as string)POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+       PRICE,
+       VENUE_OF_EXECUTION,
+       PRICE_NOTATION,
+       PRICE_CURRENCY,
+       VENUE_OF_PUBLICATION,
+       TRANSACTION_IDENTIFICATION_CODE,
+       cast(QUANTITY AS INT64) AS QUANTITY,
+       NOTIONAL_AMOUNT,
+       NOTIONAL_CURRENCY,
+       cast(PUBLICATION_DATE_AND_TIME as string) PUBLICATION_DATE_AND_TIME,
+       IDAF,
+       PRICE_DIFF,
+       LOG_QUANTITY
+       from autoencoder.autoencoder_model_data_extended
+where TRADING_DATE_AND_TIME is not null 
+and price_currency is not null
+limit 30000;
+
+create or replace table autoencoder.auto_encoder_results_set_extended as  
+SELECT
+    *, case when is_anomaly is true and mean_squared_error between   0.001000000000 and 100.0000000000000    then 'High'
+                 when is_anomaly is true and mean_squared_error  between 0.0000000100000 and 0.0009900000000  then 'Medium'
+                 when is_anomaly is true and mean_squared_error between  0.0000000000001 and 0.0000000099000 then 'Low'
+                 when is_anomaly is false then 'NOT'
+                  end as Anomaly_Type 
+FROM
+  ML.DETECT_ANOMALIES(MODEL `proplellantmscthesis.autoencoder.propellant_autoencoder_model_extended`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE`autoencoder.autoencoder_model_data_extended`)
+
+                       select * from `proplellantmscthesis.autoencoder.auto_encoder_results_set_extended` where is_anomaly = true
+
+                          select mean_squared_error,POST_TRADE_DATE_AND_TIME,INSTRUMENT_IDENTIFICATION_CODE,PRICE,PRICE_CURRENCY,QUANTITY,PRICE_DIFF,Anomaly_Type
+                           from `proplellantmscthesis.autoencoder.auto_encoder_results_set_extended` where is_anomaly = true and Anomaly_Type='High' order by 1 desc
+
+
+ create or replace table autoencoder.autoencoder_train_resultset_extended as   
+SELECT
+    *, case when is_anomaly is true and mean_squared_error between   0.001000000000 and 100.0000000000000    then 'High'
+                 when is_anomaly is true and mean_squared_error  between 0.0000000100000 and 0.0009900000000  then 'Medium'
+                 when is_anomaly is true and mean_squared_error between  0.0000000000001 and 0.0000000099000 then 'Low'
+                 when is_anomaly is false then 'NOT'
+                  end as Anomaly_Type 
+FROM
+  ML.DETECT_ANOMALIES(MODEL `proplellantmscthesis.autoencoder.propellant_autoencoder_model_extended`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE`autoencoder.autoencoder_train_data_EXTENDED`)
+
+
+                       select * from `proplellantmscthesis.autoencoder.autoencoder_train_resultset_extended`  where is_anomaly = true   and Anomaly_Type='High'
+
+                          select mean_squared_error,POST_TRADE_DATE_AND_TIME,INSTRUMENT_IDENTIFICATION_CODE,PRICE,PRICE_CURRENCY,QUANTITY,PRICE_DIFF,Anomaly_Type
+                           from `proplellantmscthesis.autoencoder.autoencoder_train_resultset_extended` where is_anomaly = true and Anomaly_Type='High' order by 1 desc
+
+   /* K-Means extended */
+
+   
+create or replace table kmeans_model.k_means_table_extended as select b.id ,a.* FROM 
+  `autoencoder.autoencoder_model_data_extended` a, kmeans_model.bond_data_with_id b
+  where a.INSTRUMENT_IDENTIFICATION_CODE=b.ISIN and a.PRICE_CURRENCY='GBP' and a.PRICE_NOTATION='PERC';    
+
+  
+ /*K-Means Clustering  */             
+
+CREATE OR REPLACE MODEL `kmeans_model.propellant_kmeans_model_extended`
+OPTIONS(
+  MODEL_TYPE = 'kmeans',
+  NUM_CLUSTERS =  85,
+  KMEANS_INIT_METHOD = 'kmeans++',
+  STANDARDIZE_FEATURES = TRUE
+
+) AS
+SELECT 
+  b.ID,Price_diff
+FROM 
+  kmeans_model.k_means_table_extended a, kmeans_model.bond_data_with_id b
+  where a.INSTRUMENT_IDENTIFICATION_CODE=b.ISIN and a.PRICE_CURRENCY='GBP' and a.PRICE_NOTATION='PERC';     
+
+
+  create or replace table proplellantmscthesis.kmeans_model.kmeans_results_set_extended as
+  SELECT
+  *
+FROM
+  ML.DETECT_ANOMALIES(MODEL `proplellantmscthesis.kmeans_model.propellant_kmeans_model_extended`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE proplellantmscthesis.kmeans_model.k_means_table_extended)    
+
+
+                      select * from proplellantmscthesis.kmeans_model.kmeans_results_set_extended   where is_anomaly is true                  
+
+
+SELECT
+  *
+FROM
+  ML.EVALUATE(MODEL `proplellantmscthesis.kmeans_model.propellant_kmeans_model_extended`)
+
+
+
+  /*Extended data provided by Propellant*/
+
+drop table proplellantmscthesis.autoencoder.LiquidBonds
+
+CREATE OR REPLACE EXTERNAL TABLE `proplellantmscthesis.autoencoder.LiquidBonds`
+(ISIN string,
+CFI_CODE string,
+SUB_CLASS_IDENTIFICATION_CODE string)
+OPTIONS (
+  format = 'CSV',
+  skip_leading_rows =1,
+  uris = ['gs://propellantdata/Liquid.csv']
+
+);
+
+
+CREATE OR REPLACE EXTERNAL TABLE `proplellantmscthesis.autoencoder.EGBBonds`
+(ISIN string,
+COUNTRY string)
+OPTIONS (
+  format = 'CSV',
+  skip_leading_rows =1,
+  uris = ['gs://propellantdata/EGBBonds.csv' ]
+);
+
+CREATE OR REPLACE EXTERNAL TABLE `proplellantmscthesis.autoencoder.Q1Q2Bonds`
+
+OPTIONS (
+  format = 'CSV',
+  skip_leading_rows =1,
+  uris = ['gs://propellantdata/Q1Q2.csv']
+
+);
+
+/*Liquid Bonds*/
+Create or replace table proplellantmscthesis.autoencoder.LiquidBonds_EXT as 
+select * from proplellantmscthesis.autoencoder.LiquidBonds
+
+Create or replace table proplellantmscthesis.autoencoder.LiquidBonds_AE_train as
+SELECT 
+* from proplellantmscthesis.autoencoder.LiquidBonds_AE limit 30000
+
+select * from `proplellantmscthesis.autoencoder.EGBBonds`
+
+select * from `proplellantmscthesis.autoencoder.Q1Q2Bonds`
+
+select * from proplellantmscthesis.autoencoder.LiquidBonds_AE
+
+
+CREATE OR REPLACE MODEL `proplellantmscthesis.autoencoder.LiquidBonds_AEModel` 
+OPTIONS(
+  model_type='autoencoder',
+  activation_fn='relu',
+  batch_size=8,
+  dropout=0.2,  
+  hidden_units=[32,16, 4, 16,32],
+  learn_rate=0.001,
+  l1_reg_activation=0.0001,
+  max_iterations=10,
+  optimizer='adam'
+) AS 
+SELECT 
+* from proplellantmscthesis.autoencoder.LiquidBonds_AE_train
+
+
+create or replace table proplellantmscthesis.autoencoder.LiquidBonds_AE_train_results as  
+SELECT
+    *, case when is_anomaly is true and mean_squared_error between   0.001000000000 and 100.0000000000000    then 'High'
+                 when is_anomaly is true and mean_squared_error  between 0.0000000100000 and 0.0009900000000  then 'Medium'
+                 when is_anomaly is true and mean_squared_error between  0.0000000000001 and 0.0000000099000 then 'Low'
+                 when is_anomaly is false then 'NOT'
+                  end as Anomaly_Type 
+FROM
+  ML.DETECT_ANOMALIES(MODEL `proplellantmscthesis.autoencoder.LiquidBonds_AEModel`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE`proplellantmscthesis.autoencoder.LiquidBonds_AE_train`)
+
+                       select * from `proplellantmscthesis.autoencoder.LiquidBonds_AE_train` 
+
+                       select * from proplellantmscthesis.autoencoder.LiquidBonds_AE_train_results where is_anomaly =true
+
+  create or replace table proplellantmscthesis.autoencoder.LiquidBonds_AE_full_results as  
+SELECT
+    *, case when is_anomaly is true and mean_squared_error between   0.001000000000 and 100.0000000000000    then 'High'
+                 when is_anomaly is true and mean_squared_error  between 0.0000000100000 and 0.0009900000000  then 'Medium'
+                 when is_anomaly is true and mean_squared_error between  0.0000000000001 and 0.0000000099000 then 'Low'
+                 when is_anomaly is false then 'NOT'
+                  end as Anomaly_Type 
+FROM
+  ML.DETECT_ANOMALIES(MODEL `proplellantmscthesis.autoencoder.LiquidBonds_AEModel`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE`proplellantmscthesis.autoencoder.LiquidBonds_AE`)
+
+                       select * from `proplellantmscthesis.autoencoder.LiquidBonds_AE_train`  
+
+                        select * from proplellantmscthesis.autoencoder.LiquidBonds_AE_full_results where is_anomaly =true  and Anomaly_Type='High'  order by 2 asc
+
+                        --US91282CEE75,RO1624DBN027
+               
+/* EGB bonds */
+
+Create or replace table proplellantmscthesis.autoencoder.EGBBonds_EXT as 
+select * from proplellantmscthesis.autoencoder.EGBBonds
+
+Create or replace table proplellantmscthesis.autoencoder.EGBBonds_AE_train as
+SELECT 
+* from proplellantmscthesis.autoencoder.EGBBonds_AE limit 30000
+
+
+select * from proplellantmscthesis.autoencoder.EGBBonds_AE
+
+
+CREATE OR REPLACE MODEL `proplellantmscthesis.autoencoder.EGBBonds_AEModel` 
+OPTIONS(
+  model_type='autoencoder',
+  activation_fn='relu',
+  batch_size=8,
+  dropout=0.2,  
+  hidden_units=[32,16, 4, 16,32],
+  learn_rate=0.001,
+  l1_reg_activation=0.0001,
+  max_iterations=10,
+  optimizer='adam'
+) AS 
+SELECT 
+* from proplellantmscthesis.autoencoder.EGBBonds_AE_train
+
+
+create or replace table proplellantmscthesis.autoencoder.EGBBonds_AE_train_results as  
+SELECT
+    *, case when is_anomaly is true and mean_squared_error between   0.001000000000 and 100.0000000000000    then 'High'
+                 when is_anomaly is true and mean_squared_error  between 0.0000000100000 and 0.0009900000000  then 'Medium'
+                 when is_anomaly is true and mean_squared_error between  0.0000000000001 and 0.0000000099000 then 'Low'
+                 when is_anomaly is false then 'NOT'
+                  end as Anomaly_Type 
+FROM
+  ML.DETECT_ANOMALIES(MODEL `proplellantmscthesis.autoencoder.EGBBonds_AEModel`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE`proplellantmscthesis.autoencoder.EGBBonds_AE_train`)
+
+                       select * from `proplellantmscthesis.autoencoder.EGBBonds_AE_train` 
+
+                       select * from proplellantmscthesis.autoencoder.EGBBonds_AE_train_results where is_anomaly =true
+
+  create or replace table proplellantmscthesis.autoencoder.EGBBonds_AE_full_results as  
+SELECT
+    *, case when is_anomaly is true and mean_squared_error between   0.001000000000 and 100.0000000000000    then 'High'
+                 when is_anomaly is true and mean_squared_error  between 0.0000000100000 and 0.0009900000000  then 'Medium'
+                 when is_anomaly is true and mean_squared_error between  0.0000000000001 and 0.0000000099000 then 'Low'
+                 when is_anomaly is false then 'NOT'
+                  end as Anomaly_Type 
+FROM
+  ML.DETECT_ANOMALIES(MODEL `proplellantmscthesis.autoencoder.EGBBonds_AEModel`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE`proplellantmscthesis.autoencoder.EGBBonds_AE`)
+
+                       select * from `proplellantmscthesis.autoencoder.EGBBonds_AE_train`  
+
+                        select * from proplellantmscthesis.autoencoder.EGBBonds_AE_full_results where is_anomaly =true  and Anomaly_Type='High'  order by 2 asc
+
+                        --US91282CEE75,RO1624DBN027
