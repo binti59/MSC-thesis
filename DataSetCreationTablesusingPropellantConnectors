@@ -1,0 +1,400 @@
+
+/*ARIMA PLUS MODEL*/
+CREATE OR REPLACE MODEL `agile-splicer-354418.arimapluspd.propellant_arima_plus_model` 
+OPTIONS(
+  MODEL_TYPE='ARIMA_PLUS',
+  TIME_SERIES_TIMESTAMP_COL='POST_TRADE_DATE_AND_TIME',
+  TIME_SERIES_DATA_COL='Price',
+  TIME_SERIES_ID_COL= [--'PUBLICATION_DATE_AND_TIME'
+  --, 'VENUE_OF_EXECUTION',
+  'INSTRUMENT_IDENTIFICATION_CODE'
+  --,'PRICE_NOTATION'
+  --,'PRICE_CURRENCY'
+  --,'VENUE_OF_PUBLICATION'
+  --,'TRANSACTION_IDENTIFICATION_CODE',
+ -- ,'QUANTITY'
+  ],
+  HOLIDAY_REGION='GLOBAL', 
+  AUTO_ARIMA=TRUE
+) AS
+SELECT
+       POST_TRADE_DATE_AND_TIME,
+     --  INSTRUMENT_IDENTIFICATION_CODE_TYPE,
+       INSTRUMENT_IDENTIFICATION_CODE,
+       sum(PRICE) PRICE,
+      -- VENUE_OF_EXECUTION,
+     --  PRICE_NOTATION,
+      -- PRICE_CURRENCY,
+      -- VENUE_OF_PUBLICATION,
+       --TRANSACTION_IDENTIFICATION_CODE,
+     --   QUANTITY,
+     -- cast(PUBLICATION_DATE_AND_TIME as string)PUBLICATION_DATE_AND_TIME
+FROM
+arimapluspd.arima_model_data
+where
+EXTRACT(date FROM cast(POST_TRADE_DATE_AND_TIME as timestamp)) < last_day(current_datetime)-30
+group by
+POST_TRADE_DATE_AND_TIME,
+INSTRUMENT_IDENTIFICATION_CODE
+
+
+
+
+
+
+create or replace table arimapluspd.arima_model_data as
+SELECT
+GENERATE_UUID() rowid,
+       cast(substr(cast(POST_TRADE_DATE_AND_TIME as string),0,25) as timestamp) POST_TRADE_DATE_AND_TIME, --timestamp
+      -- TRADING_DATE_AND_TIME,
+       --POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+       PRICE,
+       VENUE_OF_EXECUTION,
+       PRICE_NOTATION,
+       PRICE_CURRENCY,
+       VENUE_OF_PUBLICATION,
+       TRANSACTION_IDENTIFICATION_CODE,
+       cast(QUANTITY AS INT64) AS QUANTITY,
+       NOTIONAL_AMOUNT,
+       NOTIONAL_CURRENCY,
+       PUBLICATION_DATE_AND_TIME,
+       IDAF
+  
+FROM
+  `pd-prod-bristol-e0be.looker_connectors.historical_rts2_enriched`  
+ where  
+        CANCELLED=False
+        and ACTIVE=True
+        and INSTRUMENT_IDENTIFICATION_CODE_TYPE='ISIN'
+        --and EXTRACT(date FROM TRADING_DATE_AND_TIME) < last_day(current_datetime)-60
+        and INSTRUMENT_IDENTIFICATION_CODE in (select distinct ISIN from `pd-prod-bristol-e0be.looker_connectors.mv_debt_instruments`
+where DMO=TRUE and ISSUER_COUNTRY_CODE = 'GB' and NOTIONAL_CURRENCY='GBP'
+and TRADING_VENUE_TERMINATION_DATE >current_timestamp())
+order by 1 asc
+        
+select last_day(current_datetime)-30
+
+
+SELECT
+  *, case when anomaly_probability between 0 and 0.33 then 'Low'
+                 when anomaly_probability between 0.33 and 0.66 then 'Medium'
+                 when anomaly_probability between 0.66 and 1 then 'High' end as Risk_level 
+FROM
+  ML.DETECT_ANOMALIES(MODEL `agile-splicer-354418.arimapluspd.propellant_arima_plus_model`,
+    STRUCT(0.8 AS anomaly_prob_threshold),
+(SELECT
+      -- cast(substr(cast(POST_TRADE_DATE_AND_TIME as string),0,25) as timestamp) POST_TRADE_DATE_AND_TIME, --timestamp
+       --TRADING_DATE_AND_TIME,
+       POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+       sum(PRICE) PRICE,
+       --VENUE_OF_EXECUTION,
+       --PRICE_NOTATION,
+       --PRICE_CURRENCY,
+       --VENUE_OF_PUBLICATION,
+       --TRANSACTION_IDENTIFICATION_CODE,
+       --cast(QUANTITY AS INT64) AS QUANTITY,
+       --NOTIONAL_AMOUNT,
+      -- NOTIONAL_CURRENCY,
+      --cast(PUBLICATION_DATE_AND_TIME as string) PUBLICATION_DATE_AND_TIME,
+       --IDAF
+FROM
+  `arimapluspd.arima_model_data`  
+ where  
+       EXTRACT(date FROM POST_TRADE_DATE_AND_TIME) > last_day(current_datetime)-30 group by
+POST_TRADE_DATE_AND_TIME,
+INSTRUMENT_IDENTIFICATION_CODE)       
+         ) 
+
+
+      # Model fit on train data
+
+
+WITH
+  new_data AS (
+SELECT
+       --cast(substr(cast(POST_TRADE_DATE_AND_TIME as string),0,25) as timestamp) POST_TRADE_DATE_AND_TIME, --timestamp
+       --TRADING_DATE_AND_TIME,
+       POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+       sum(PRICE) price,
+       --VENUE_OF_EXECUTION,
+       --PRICE_NOTATION,
+       --PRICE_CURRENCY,
+       --VENUE_OF_PUBLICATION,
+       --TRANSACTION_IDENTIFICATION_CODE,
+       --cast(QUANTITY AS INT64) AS QUANTITY,
+       --NOTIONAL_AMOUNT,
+       --NOTIONAL_CURRENCY,
+       --PUBLICATION_DATE_AND_TIME,
+       --IDAF
+FROM
+  `pd-prod-bristol-e0be.looker_connectors.historical_rts2_enriched`  
+ where  
+        CANCELLED=False
+        and ACTIVE=True
+        and EXTRACT(MONTH FROM TRADING_DATE_AND_TIME) in (5) --EXTRACT(MONTH FROM current_Datetime)
+        and INSTRUMENT_IDENTIFICATION_CODE  in (select distinct ISIN from `pd-prod-bristol-e0be.looker_connectors.mv_debt_instruments`
+where DMO=TRUE and ISSUER_COUNTRY_CODE = 'GB' and NOTIONAL_CURRENCY='GBP'
+and TRADING_VENUE_TERMINATION_DATE >current_timestamp())group by
+POST_TRADE_DATE_AND_TIME,
+INSTRUMENT_IDENTIFICATION_CODE)
+SELECT *
+FROM   ML.DETECT_ANOMALIES(MODEL `arimapluspd.propellant_arima_plus_model`,
+                      STRUCT(0.8 AS anomaly_prob_threshold), 
+((SELECT
+      *
+    FROM
+      new_data)));
+
+--CREATE MATERIALIZED VIEW  `agile-splicer-354418.arimapluspd.propellant_arima_plus_model` AS
+
+SELECT
+  *, case when anomaly_probability between 0 and 0.33 then 'Low'
+                 when anomaly_probability between 0.33 and 0.66 then 'Medium'
+                 when anomaly_probability between 0.66 and 1 then 'High' end as Risk_level 
+FROM
+  ML.DETECT_ANOMALIES(MODEL `arimapluspd.propellant_arima_plus_model`,
+                      STRUCT(0.8 AS anomaly_prob_threshold)) where is_anomaly=true;
+
+                      
+SELECT
+  *
+FROM
+  ML.EVALUATE(MODEL `arimapluspd.propellant_arima_plus_model`
+                      );
+
+
+
+
+SELECT * FROM `pd-prod-bristol-e0be.looker_connectors.INFORMATION_SCHEMA.TABLES`
+
+select * from `pd-prod-bristol-e0be.looker_connectors.mv_other_instruments`
+where  ISIN in  (select distinct ISIN from `pd-prod-bristol-e0be.looker_connectors.mv_debt_instruments`
+where DMO=TRUE and ISSUER_COUNTRY_CODE = 'GB' and NOTIONAL_CURRENCY='GBP'
+and TRADING_VENUE_TERMINATION_DATE >current_timestamp())
+
+
+create or replace table arimapluspd.bonds_data as 
+select distinct ISIN from `pd-prod-bristol-e0be.looker_connectors.mv_debt_instruments`
+where DMO=TRUE and ISSUER_COUNTRY_CODE = 'GB' and NOTIONAL_CURRENCY='GBP'
+and TRADING_VENUE_TERMINATION_DATE >current_timestamp()
+
+select ISIN,INSTRUMENT_FULL_NAME,NOTIONAL_CURRENCY,BOND_NOMINAL_AMOUNT_CURRENCY,BOND_FIXED_RATE,ISSUER_NAME,ISSUER_COUNTRY_NAME from `pd-prod-bristol-e0be.looker_connectors.mv_debt_instruments`
+where DMO=TRUE and ISSUER_COUNTRY_CODE = 'GB' and NOTIONAL_CURRENCY='GBP'
+and TRADING_VENUE_TERMINATION_DATE >current_timestamp()
+
+select * from arimapluspd.bonds_data
+
+
+
+select * from `pd-prod-bristol-e0be.looker_connectors.historical_rts2_enriched`  
+where INSTRUMENT_IDENTIFICATION_CODE  in (select distinct ISIN from `pd-prod-bristol-e0be.looker_connectors.mv_debt_instruments`
+where DMO=TRUE and ISSUER_COUNTRY_CODE = 'GB' and NOTIONAL_CURRENCY='GBP'
+and TRADING_VENUE_TERMINATION_DATE >current_timestamp())
+and CANCELLED=False
+        and ACTIVE=True
+
+
+
+
+SELECT
+count(*),
+ INSTRUMENT_IDENTIFICATION_CODE
+FROM
+  `pd-prod-bristol-e0be.looker_connectors.historical_rts2_enriched`  
+  where CANCELLED=False
+        and ACTIVE=True
+        and INSTRUMENT_IDENTIFICATION_CODE in (select distinct ISIN from `pd-prod-bristol-e0be.looker_connectors.mv_debt_instruments`
+where DMO=TRUE and ISSUER_COUNTRY_CODE = 'GB' and NOTIONAL_CURRENCY='GBP'
+and TRADING_VENUE_TERMINATION_DATE >current_timestamp())
+ group by
+INSTRUMENT_IDENTIFICATION_CODE
+order by count(*) desc
+
+SELECT
+*
+FROM
+  `pd-prod-bristol-e0be.looker_connectors.historical_rts2_enriched`  
+
+
+  /*Auto Encoder Model*/
+CREATE OR REPLACE MODEL `agile-splicer-354418.autoencoder.propellant_autoencoder_model` 
+OPTIONS(
+  model_type='autoencoder',
+  activation_fn='relu',
+  batch_size=8,
+  dropout=0.2,  
+  hidden_units=[32,16, 4, 16,32],
+  learn_rate=0.001,
+  l1_reg_activation=0.0001,
+  max_iterations=10,
+  optimizer='adam'
+) AS 
+SELECT 
+  * from
+  `autoencoder.autoencoder_model_data` limit 30000;
+
+  create or replace table autoencoder.autoencoder_model_data as
+select * from (
+SELECT
+       --cast(substr(cast(POST_TRADE_DATE_AND_TIME as string),0,25) as timestamp) POST_TRADE_DATE_AND_TIME, --timestamp
+       cast(TRADING_DATE_AND_TIME as string) TRADING_DATE_AND_TIME,
+       cast(POST_TRADE_DATE_AND_TIME as string)POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+       PRICE,
+       VENUE_OF_EXECUTION,
+       PRICE_NOTATION,
+       PRICE_CURRENCY,
+       VENUE_OF_PUBLICATION,
+       TRANSACTION_IDENTIFICATION_CODE,
+       cast(QUANTITY AS INT64) AS QUANTITY,
+       NOTIONAL_AMOUNT,
+       NOTIONAL_CURRENCY,
+       PUBLICATION_DATE_AND_TIME,
+       IDAF
+FROM
+  `pd-prod-bristol-e0be.looker_connectors.historical_rts2_enriched`  
+ where  
+        CANCELLED=False
+        and ACTIVE=True
+        --and EXTRACT(date FROM TRADING_DATE_AND_TIME) < last_day(current_datetime)-60
+        and INSTRUMENT_IDENTIFICATION_CODE --like 'DE%'
+        in (select distinct ISIN from `pd-prod-bristol-e0be.looker_connectors.mv_debt_instruments`
+where DMO=TRUE and ISSUER_COUNTRY_CODE = 'GB' and NOTIONAL_CURRENCY='GBP'
+and TRADING_VENUE_TERMINATION_DATE >current_timestamp())
+order by 1 asc)
+
+  SELECT
+  *
+FROM
+  ML.DETECT_ANOMALIES(MODEL `autoencoder.propellant_autoencoder_model`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE `autoencoder.autoencoder_model_data`) where is_anomaly=true;
+
+select * from where instrument_identification_code DE0007664039
+
+  SELECT
+  *
+FROM ML.RECONSTRUCTION_LOSS(MODEL `autoencoder.propellant_autoencoder_model`,
+                                           TABLE `autoencoder.autoencoder_model_data`)
+
+  SELECT
+  *
+FROM
+  ML.DETECT_ANOMALIES(MODEL `autoencoder.propellant_autoencoder_model`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE `autoencoder.autoencoder_model_data`)  where instrument_identification_code='GB00BLBDX619' and is_anomaly=True
+
+
+                      select * from autoencoder.autoencoder_model_data where instrument_identification_code='GB00BDX8CX86'
+
+                      select * from autoencoder.autoencoder_model_data where instrument_identification_code='GB00BLBDX619' 
+
+                      
+
+
+ /*K-Means Clustering  */             
+
+ CREATE MODEL `kmeans_model.propellant_kmeans_model`
+OPTIONS(
+  MODEL_TYPE = 'kmeans',
+  NUM_CLUSTERS = 8,
+  KMEANS_INIT_METHOD = 'kmeans++'
+) AS
+SELECT 
+TRADING_DATE_AND_TIME,
+POST_TRADE_DATE_AND_TIME,
+INSTRUMENT_IDENTIFICATION_CODE,
+PRICE,
+QUANTITY,
+NOTIONAL_AMOUNT,
+PUBLICATION_DATE_AND_TIME
+FROM 
+  autoencoder.autoencoder_model_data limit 80000;
+
+  SELECT
+  *
+FROM
+  ML.DETECT_ANOMALIES(MODEL `kmeans_model.propellant_kmeans_model`,
+                      STRUCT(0.02 AS contamination),
+                      TABLE `autoencoder.autoencoder_model_data`);       
+
+
+
+  /* Get the data for the bonds*/ 
+
+  create or replace  table `proplellantmscthesis.autoencoder.LiquidBonds_AE` as 
+  SELECT 
+     cast(TRADING_DATE_AND_TIME as string) TRADING_DATE_AND_TIME,
+       cast(POST_TRADE_DATE_AND_TIME as string)POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+        ifnull(PRICE,0) PRICE,
+       VENUE_OF_EXECUTION,
+       PRICE_NOTATION,
+       PRICE_CURRENCY,
+       VENUE_OF_PUBLICATION,
+       TRANSACTION_IDENTIFICATION_CODE,
+        ifnull(cast(QUANTITY AS INT64),0) AS QUANTITY,
+       NOTIONAL_AMOUNT,
+       NOTIONAL_CURRENCY,
+       cast(PUBLICATION_DATE_AND_TIME as string) PUBLICATION_DATE_AND_TIME,
+       IDAF ,
+       ifnull(PRICE,0)-LAG( ifnull(PRICE,0)) OVER (PARTITION BY INSTRUMENT_IDENTIFICATION_CODE ORDER BY INSTRUMENT_IDENTIFICATION_CODE,POST_TRADE_DATE_AND_TIME) AS PRICE_DIFF,
+       log(ifnull(cast(QUANTITY AS INT64),0)+3) LOG_QUANTITY from `proplellantmscthesis.autoencoder.LiquidBonds_EXT` a, `pd-prod-bristol-e0be.looker_connectors.historical_rts2_enriched`  b
+  where a.ISIN=b.INSTRUMENT_IDENTIFICATION_CODE
+  and CANCELLED=False
+        and ACTIVE=True
+ and TRADING_DATE_AND_TIME is not null 
+ and price_currency is not null
+
+
+   create or replace  table `proplellantmscthesis.autoencoder.EGBBonds_AE` as 
+  SELECT 
+     cast(TRADING_DATE_AND_TIME as string) TRADING_DATE_AND_TIME,
+       cast(POST_TRADE_DATE_AND_TIME as string)POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+        ifnull(PRICE,0) PRICE,
+       VENUE_OF_EXECUTION,
+       PRICE_NOTATION,
+       PRICE_CURRENCY,
+       VENUE_OF_PUBLICATION,
+       TRANSACTION_IDENTIFICATION_CODE,
+        ifnull(cast(QUANTITY AS INT64),0) AS QUANTITY,
+       NOTIONAL_AMOUNT,
+       NOTIONAL_CURRENCY,
+       cast(PUBLICATION_DATE_AND_TIME as string) PUBLICATION_DATE_AND_TIME,
+       IDAF ,
+       ifnull(PRICE,0)-LAG( ifnull(PRICE,0)) OVER (PARTITION BY INSTRUMENT_IDENTIFICATION_CODE ORDER BY INSTRUMENT_IDENTIFICATION_CODE,POST_TRADE_DATE_AND_TIME) AS PRICE_DIFF,
+       log(ifnull(cast(QUANTITY AS INT64),0)+3) LOG_QUANTITY from `proplellantmscthesis.autoencoder.LiquidBonds_EXT` a, `pd-prod-bristol-e0be.looker_connectors.historical_rts2_enriched`  b
+  where a.ISIN=b.INSTRUMENT_IDENTIFICATION_CODE
+  and CANCELLED=False
+        and ACTIVE=True
+ and TRADING_DATE_AND_TIME is not null 
+ and price_currency is not null
+      
+   create or replace  table `proplellantmscthesis.autoencoder.EGBBonds_AE` as 
+  SELECT 
+     cast(TRADING_DATE_AND_TIME as string) TRADING_DATE_AND_TIME,
+       cast(POST_TRADE_DATE_AND_TIME as string)POST_TRADE_DATE_AND_TIME,
+       INSTRUMENT_IDENTIFICATION_CODE,
+        ifnull(PRICE,0) PRICE,
+       VENUE_OF_EXECUTION,
+       PRICE_NOTATION,
+       PRICE_CURRENCY,
+       VENUE_OF_PUBLICATION,
+       TRANSACTION_IDENTIFICATION_CODE,
+        ifnull(cast(QUANTITY AS INT64),0) AS QUANTITY,
+       NOTIONAL_AMOUNT,
+       NOTIONAL_CURRENCY,
+       cast(PUBLICATION_DATE_AND_TIME as string) PUBLICATION_DATE_AND_TIME,
+       IDAF ,
+       ifnull(PRICE,0)-LAG( ifnull(PRICE,0)) OVER (PARTITION BY INSTRUMENT_IDENTIFICATION_CODE ORDER BY INSTRUMENT_IDENTIFICATION_CODE,POST_TRADE_DATE_AND_TIME) AS PRICE_DIFF,
+       log(ifnull(cast(QUANTITY AS INT64),0)+3) LOG_QUANTITY from `proplellantmscthesis.autoencoder.LiquidBonds_EXT` a, `pd-prod-bristol-e0be.looker_connectors.historical_rts2_enriched`  b
+  where a.ISIN=b.INSTRUMENT_IDENTIFICATION_CODE
+  and CANCELLED=False
+        and ACTIVE=True
+ and TRADING_DATE_AND_TIME is not null 
+ and price_currency is not null
+      
